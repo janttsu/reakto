@@ -4,7 +4,7 @@ version = "0.1.0"
 description = "E-mail triage with a local LLM: lists the mails that still need your personal reaction"
 readme = "README.md"
 requires-python = ">=3.11"
-license = { text = "MIT" }
+license = "MIT"
 keywords = ["email", "triage", "llm", "ollama", "privacy"]
 dependencies = ["httpx>=0.27"]
 

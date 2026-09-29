@@ -8,7 +8,7 @@ from datetime import date, datetime
 from reakto.mail import Mail
 from reakto.mailbox import Mailbox
 
-PROMPT_VERSION = "5"
+PROMPT_VERSION = "6"
 
 LANGUAGES = {"fi": "Finnish", "en": "English", "sv": "Swedish"}
 
@@ -44,7 +44,10 @@ WHAT NEEDS MY REACTION (needs_action = true)
   already passed does NOT make it irrelevant: it is overdue, priority "high", and the action
   says to check that it has been paid, unless a later related message shows the payment.
 - Orders that are confirmed or shipped but not yet delivered: "await_delivery" (priority
-  "low" or "medium"), until a later related message shows the delivery or pick-up. A notice
+  "low" or "medium"), until a later related message shows the delivery or pick-up. An
+  estimated delivery or pick-up date that has passed is NOT proof of delivery: without a
+  later confirmation keep it listed with priority "low" and the action "check that you
+  received it". A notice
   that a parcel is waiting at a pick-up point: "pick_up" with the last pick-up date.
 - Bookings, reservations, tickets, appointments and events whose date is today or later:
   ALWAYS needs_action = true, "attend", with event_date: even a plain confirmation matters,
