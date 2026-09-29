@@ -150,3 +150,13 @@ def test_engine_no_think_reviews_gray_zone(maildir, tmp_path):
     quiet = type("Q", (), {"log": lambda self, msg: None})()
     assert Engine(opts, llm=llm, cache=Cache(tmp_path / "c.sqlite"), progress=quiet).run() == 0
     assert [think for think, _ in llm.calls] == [False, False, True]
+
+
+def test_every_open_order_is_listed_low():
+    v = settle(Verdict(kind="order", needs_action=False, action_type="none", priority="none"),
+               replied_after=False, today=TODAY)
+    assert v.needs_action and v.action_type == "await_delivery" and v.priority == "low" and v.action
+    done = settle(Verdict(kind="order", needs_action=False, superseded=True), replied_after=False, today=TODAY)
+    assert not done.needs_action
+    receipt = settle(Verdict(kind="receipt", needs_action=False), replied_after=False, today=TODAY)
+    assert not receipt.needs_action

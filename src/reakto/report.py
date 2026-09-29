@@ -18,7 +18,7 @@ MARKER = "<!-- reakto report: generated file, rewritten on every run -->"
 PRIORITY_FI = {"critical": "🔴 kriittinen", "high": "🟠 korkea", "medium": "🟡 keski", "low": "⚪ matala"}
 ACTION_FI = {
     "reply": "vastaa", "pay": "maksa", "confirm": "vahvista", "read_elsewhere": "lue palvelussa",
-    "attend": "varaus", "await_delivery": "odota toimitusta", "pick_up": "nouda",
+    "attend": "varaus", "await_delivery": "seuraa tilausta", "pick_up": "nouda",
     "check_security": "tarkista", "decide": "päätä", "other": "muu", "none": "",
 }
 
@@ -175,7 +175,7 @@ def render(
         f"Lähde `{source}` · {total} viestiä · malli `{model}` (paikallinen) · {gen} · **{state}**",
         "",
         f"**{len(act)} vaatii reaktiota:** {len(human)} ihmisiltä · {len(todo)} toimenpidettä · "
-        f"{len(bookings)} varausta · {len(deliveries)} odottaa toimitusta · {len(suspicious)} epäilyttävää · "
+        f"{len(bookings)} varausta · {len(deliveries)} tilausta · {len(suspicious)} epäilyttävää · "
         f"{len(minor)} pientä tarkistusta" + (f" · {len(errors)} analyysi epäonnistui" if errors else ""),
         "",
     ]
@@ -204,7 +204,7 @@ def render(
     section("⚠️ Epäilyttävät viestit", "Mahdollinen huijaus: älä avaa linkkejä, tarkista asia palvelusta itse.", suspicious)
     section("🟠 Toimenpiteet", "Maksut, vastaukset, vahvistukset ja muualla odottavat viestit.", todo)
     section("📅 Tulevat varaukset ja tapahtumat", "", bookings)
-    section("📦 Odottaa toimitusta", "Tilaukset, joiden toimituksesta ei ole vielä vahvistusta.", deliveries)
+    section("📦 Tilaukset", "Tarkista tilauksen sisältö ja seuraa, että se toteutuu. Poistuu listalta, kun toimitus vahvistuu.", deliveries)
     section("🔎 Pienet tarkistukset", "Matalan prioriteetin asiat, esimerkiksi kirjautumisilmoitukset.", minor)
     if errors:
         lines += [f"## ❓ Analyysi epäonnistui – tarkista itse ({len(errors)})", ""]

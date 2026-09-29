@@ -28,7 +28,7 @@ The report is in Finnish by default (`--lang en` for English) and grouped like t
 | ⚠️ Suspicious | Likely phishing: a "tax office" mail from an unrelated domain, failed SPF/DKIM/DMARC, pressure to click or pay. |
 | 🟠 Actions | Invoices to pay (amount, reference and due date are read from PDF attachments too), support cases waiting for your answer, letters in OmaPosti or the online bank, things to confirm, parcels to pick up. |
 | 📅 Bookings and events | Table, travel and appointment confirmations for today or later. Past ones drop out. |
-| 📦 Waiting for delivery | Orders confirmed or shipped with no delivery confirmation yet. |
+| 📦 Orders | Every order still open, also subscriptions and service changes: check what was ordered and that it really happens. It drops out when a later mail confirms the delivery. |
 | 🔎 Minor checks | Login alerts and similar "check that it was you" notices. |
 
 A table at the top lists everything in priority order, and the end of the report counts the mails that need nothing.
@@ -46,6 +46,7 @@ A table at the top lists everything in priority order, and the end of the report
    - a person's unanswered mail is critical;
    - suspicious mail is always listed;
    - future bookings are always listed;
+   - open orders are always listed (low priority);
    - past bookings and superseded mails drop out;
    - overdue invoices stay on the list.
 

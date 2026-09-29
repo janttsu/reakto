@@ -149,6 +149,13 @@ def settle(v: Verdict, *, replied_after: bool, today: date) -> Verdict:
             v.action = "Muista varaus (tai peru ajoissa)."
         days = (date.fromisoformat(v.event_date) - today).days
         v.priority = "high" if days <= 1 else "medium" if days <= 7 else "low"
+    if v.kind == "order" and not v.superseded and not v.needs_action:
+        # Every order (goods, a subscription, a service change) stays on the list at a low
+        # level until a later mail shows it was delivered: check its contents and that it happens.
+        v.needs_action = True
+        v.action_type = "await_delivery"
+        v.priority = "low"
+        v.action = v.action or "Tarkista tilauksen sisältö ja varmista, että tilaus toteutuu."
     if v.needs_action and v.priority == "none":
         v.priority = "low"
     if not v.needs_action:

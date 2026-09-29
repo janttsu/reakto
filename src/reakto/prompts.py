@@ -43,7 +43,9 @@ WHAT NEEDS MY REACTION (needs_action = true)
   date from the attachment text): action_type "pay", deadline = due date. A due date that has
   already passed does NOT make it irrelevant: it is overdue, priority "high", and the action
   says to check that it has been paid, unless a later related message shows the payment.
-- Orders that are confirmed or shipped but not yet delivered: "await_delivery" (priority
+- Orders that are confirmed or shipped but not yet delivered, including subscriptions and
+  service changes (a new phone plan, an upgrade): I want to check what was ordered and that it
+  really happens. "await_delivery" (priority
   "low" or "medium"), until a later related message shows the delivery or pick-up. An
   estimated delivery or pick-up date that has passed is NOT proof of delivery: without a
   later confirmation keep it listed with priority "low" and the action "check that you
