@@ -160,3 +160,26 @@ def test_every_open_order_is_listed_low():
     assert not done.needs_action
     receipt = settle(Verdict(kind="receipt", needs_action=False), replied_after=False, today=TODAY)
     assert not receipt.needs_action
+
+
+def test_restart_starts_from_the_full_report_even_with_another_model(maildir, tmp_path):
+    make_eml(maildir, "lasku", sender="Seura <seura@gmail.com>", subject="Lasku laituripaikasta")
+    make_eml(maildir, "ad", subject="Tarjous", headers={"List-Unsubscribe": "<mailto:x@example.com>"})
+    target = tmp_path / "out.md"
+    cache = Cache(tmp_path / "c.sqlite")
+    quiet = type("Q", (), {"log": lambda self, msg: None})()
+    opts = Options(source=maildir, target=target, model="fake", url="http://127.0.0.1:1/v1", today=TODAY)
+    assert Engine(opts, llm=FakeLLM(), cache=cache, progress=quiet).run() == 0
+
+    class Refuses(FakeLLM):
+        model = "other-model"
+
+        def complete(self, *a, **k):
+            raise AssertionError("everything should come from the cache")
+
+    eng = Engine(opts, llm=Refuses(), cache=cache, progress=quiet)
+    eng.load()
+    eng.prescan()  # the report is complete before any model call
+    text = target.read_text()
+    assert "Lasku laituripaikasta" in text and "KESKEN – 2/2" in text
+    assert eng.run() == 0

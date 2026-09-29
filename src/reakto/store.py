@@ -50,5 +50,13 @@ class Cache:
         )
         self.db.commit()
 
+    def models(self) -> list[str]:
+        """Models that have verdicts in the cache, most used first."""
+        rows = self.db.execute(
+            "SELECT json_extract(data, '$.model') AS m, COUNT(*) FROM verdicts"
+            " WHERE m IS NOT NULL AND m != '' GROUP BY m ORDER BY 2 DESC"
+        ).fetchall()
+        return [r[0] for r in rows]
+
     def close(self) -> None:
         self.db.close()

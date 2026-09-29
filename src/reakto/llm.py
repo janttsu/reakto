@@ -98,6 +98,7 @@ class LocalLLM:
         self.timeout_sec = timeout_sec
         self.max_retries = max(0, int(max_retries))
         self._raw: bool | None = None
+        self._num_ctx: int | None = None
 
     def _client(self, timeout: httpx.Timeout) -> httpx.Client:
         # trust_env=False: never route through HTTP(S)_PROXY to another host.
@@ -215,6 +216,22 @@ class LocalLLM:
         if resp.status_code >= 400:
             raise LLMError(f"LLM HTTP {resp.status_code}: {resp.text[:300]}")
         return resp.json()
+
+    def context_window(self) -> int | None:
+        """num_ctx baked into an Ollama model tag (e.g. 16384 for qwen3.5:9b-16k)."""
+        if self._num_ctx is None:
+            self._num_ctx = 0
+            try:
+                with self._client(httpx.Timeout(8.0, connect=3.0)) as client:
+                    r = client.post(self._native_url("/api/show"), json={"model": self.model})
+                if r.status_code == 200:
+                    for line in str(r.json().get("parameters") or "").splitlines():
+                        parts = line.split()
+                        if len(parts) == 2 and parts[0] == "num_ctx":
+                            self._num_ctx = int(parts[1])
+            except (httpx.HTTPError, ValueError, TypeError):
+                pass
+        return self._num_ctx or None
 
     def warm_prefix(self, system: str, user_prefix: str) -> float:
         """Process the shared prompt prefix once so later mails restore it from a checkpoint."""

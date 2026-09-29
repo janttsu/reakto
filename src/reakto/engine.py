@@ -78,6 +78,8 @@ class Engine:
         self.targets: list[Mail] = []
         self._last_write = 0.0
         self._warm_pending = False
+        self._models: list[str] | None = None
+        self.first: dict[str, Verdict] = {}  # pass 1 verdicts; self.verdicts holds the final ones
 
     # -- loading --------------------------------------------------------
     def load(self) -> None:
@@ -113,8 +115,7 @@ class Engine:
         messages = [{"role": "system", "content": self.system}, {"role": "user", "content": user}]
         t0 = time.monotonic()
         try:
-            c = self.llm.complete_chat(self.system, user, think=think,
-                                       max_tokens=self.o.deep_max_tokens if think else 1200)
+            c = self.llm.complete_chat(self.system, user, think=think, max_tokens=self._budget(user, think))
         except LLMError as e:
             if not think or "budget" not in str(e):
                 raise
@@ -131,9 +132,33 @@ class Engine:
         v.deep = think
         return v, time.monotonic() - t0
 
-    def _key(self, stage: str, m: Mail, context: str) -> str:
-        return cache_key(stage, m.sha256, self.llm.model, prompts.PROMPT_VERSION, self.o.language,
+    def _budget(self, user: str, think: bool) -> int:
+        """Answer tokens: the thinking budget, cut to what the model's context leaves."""
+        want = self.o.deep_max_tokens if think else 1200
+        ctx = getattr(self.llm, "context_window", lambda: None)()
+        if not ctx:
+            return want
+        prompt_est = (len(self.system) + len(user)) // 3 + 64  # Finnish runs ~3 chars/token
+        return max(1024, min(want, ctx - prompt_est - 256))
+
+    def _key(self, stage: str, m: Mail, context: str, model: str | None = None) -> str:
+        return cache_key(stage, m.sha256, model or self.llm.model, prompts.PROMPT_VERSION, self.o.language,
                          self.o.rules, context)
+
+    def _cached(self, stage: str, m: Mail, context: str) -> Verdict | None:
+        """This model's verdict, else one from another model for the very same mail and context.
+
+        Switching models must not hide the analyses already made; --refresh asks again.
+        """
+        if self.o.refresh:
+            return None
+        if self._models is None:
+            self._models = [self.llm.model] + [x for x in self.cache.models() if x != self.llm.model]
+        for model in self._models:
+            hit = self.cache.get(self._key(stage, m, context, model))
+            if hit:
+                return Verdict.from_dict(hit)
+        return None
 
     def _context(self, m: Mail, summaries: dict[str, str] | None = None) -> str:
         assert self.box is not None
@@ -141,7 +166,7 @@ class Engine:
         return prompts.related_block(m, self.box, summaries) + "|" + replies + "|" + ",".join(sorted(self.box.me))
 
     def analyze(self, m: Mail, *, deep: bool, summaries: dict[str, str] | None = None,
-                first: Verdict | None = None) -> tuple[Verdict, bool]:
+                first: Verdict | None = None, cache_only: bool = False) -> tuple[Verdict, bool]:
         """(verdict, from_cache) for one mail and one pass."""
         assert self.box is not None
         think = deep or self.o.think
@@ -150,10 +175,11 @@ class Engine:
         if deep and first is not None:
             ctx += "|" + json.dumps(first.model_view(), sort_keys=True, ensure_ascii=False)
         key = self._key(stage, m, ctx)
-        if not self.o.refresh:
-            hit = self.cache.get(key)
-            if hit:
-                return Verdict.from_dict(hit), True
+        hit = self._cached(stage, m, ctx)
+        if hit is not None:
+            return hit, True
+        if cache_only:
+            return Verdict(error="not cached"), False
         if self._warm_pending:
             self._warm_pending = False
             self.warm_up()
@@ -212,6 +238,36 @@ class Engine:
         return f", arviolta {secs / 60:.0f} min jäljellä" if secs >= 60 else ""
 
     # -- the run -----------------------------------------------------------
+    def _candidates(self) -> list[Mail]:
+        return [m for m in self.targets if m.sha256 in self.first and worth_deep_review(
+            self.first[m.sha256], self.o.min_confidence, self.o.today, gray=not self.o.think)]
+
+    def _summaries(self) -> dict[str, str]:
+        return {sha: v.summary for sha, v in self.first.items() if v.summary}
+
+    def prescan(self) -> None:
+        """Put every verdict already in the cache into the report before any model call.
+
+        A restarted run then starts from the full report instead of an empty one,
+        and the report always matches the cache.
+        """
+        for m in self.targets:
+            v, cached = self.analyze(m, deep=False, cache_only=True)
+            if cached:
+                self.first[m.sha256] = self.verdicts[m.sha256] = v
+        reviewed = 0
+        if self.o.deep:
+            summaries = self._summaries()
+            for m in self._candidates():
+                first = self.first[m.sha256]
+                v, cached = self.analyze(m, deep=True, summaries=summaries,
+                                         first=None if first.error else first, cache_only=True)
+                if cached and not v.error:
+                    self.verdicts[m.sha256] = v
+                    reviewed += 1
+        self.p.log(f"  välimuistissa valmiina: {len(self.first)}/{len(self.targets)} analyysia, {reviewed} tarkistusta")
+        self.write(done=False, force=True)
+
     def run(self) -> int:
         check_target(self.o.target)
         if self.box is None:
@@ -221,40 +277,41 @@ class Engine:
         times: list[float] = []
         dtimes: list[float] = []
         try:
+            self.prescan()
             mode = "thinking päällä" if self.o.think else "nopea, ilman thinkingiä"
-            self.p.log(f"Vaihe 1/2: analyysi kaikille viesteille ({self.llm.model}, {mode})")
+            todo = [m for m in self.targets if m.sha256 not in self.first]
+            self.p.log(f"Vaihe 1/2: analyysi {len(todo)} uudelle viestille ({self.llm.model}, {mode})")
             self._warm_pending = True
-            for i, m in enumerate(self.targets, 1):
+            for i, m in enumerate(todo, 1):
                 v, cached = self.analyze(m, deep=False)
-                self.verdicts[m.sha256] = v
+                self.first[m.sha256] = self.verdicts[m.sha256] = v
                 s = self._settled(m, v)
                 if not cached and not v.error:
                     times.append(v.seconds)
-                timing = ("välimuisti" if cached else f"{v.seconds:.0f}s") + self._eta(times, n - i)
-                self.p.log(f"[{i}/{n}] {m.date_str()[:10]} {(m.from_name or m.from_addr)[:28]} — {m.subject[:50]}\n"
+                timing = ("välimuisti" if cached else f"{v.seconds:.0f}s") + self._eta(times, len(todo) - i)
+                self.p.log(f"[{i}/{len(todo)}] {m.date_str()[:10]} {(m.from_name or m.from_addr)[:28]} — {m.subject[:50]}\n"
                            f"        → {_short(s)} ({timing})")
                 self.write(done=False)
             if self.o.deep:
-                quick = dict(self.verdicts)
-                flagged = [m for m in self.targets if worth_deep_review(quick[m.sha256], self.o.min_confidence, self.o.today,
-                                                                     gray=not self.o.think)]
-                summaries = {sha: v.summary for sha, v in quick.items() if v.summary}
+                summaries = self._summaries()
+                flagged = self._candidates()
                 self.p.log(f"Vaihe 2/2: tarkistus (thinking + liittyvien viestien analyysit) {len(flagged)} viestille")
                 self._warm_pending = True
                 self.write(done=False, force=True)
                 for i, m in enumerate(flagged, 1):
-                    first = quick[m.sha256]
+                    first = self.first[m.sha256]
                     v, cached = self.analyze(m, deep=True, summaries=summaries, first=None if first.error else first)
                     if v.error:
                         self.p.log(f"  tarkistus epäonnistui, käytetään vaiheen 1 tulosta: {v.error[:100]}")
-                        if first.error:
-                            self.verdicts[m.sha256] = v
+                        self.verdicts[m.sha256] = first
                     else:
                         self.verdicts[m.sha256] = v
+                    if cached:
+                        continue  # already in the report since the prescan
                     s = self._settled(m, self.verdicts[m.sha256])
-                    if not cached and not v.error:
+                    if not v.error:
                         dtimes.append(v.seconds)
-                    timing = ("välimuisti" if cached else f"{v.seconds:.0f}s") + self._eta(dtimes, len(flagged) - i)
+                    timing = f"{v.seconds:.0f}s" + self._eta(dtimes, len(flagged) - i)
                     self.p.log(f"[tarkistus {i}/{len(flagged)}] {m.date_str()[:10]} {(m.from_name or m.from_addr)[:28]} — {m.subject[:50]}\n"
                                f"        → {_short(s)} ({timing})")
                     self.write(done=False)

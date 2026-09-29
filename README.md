@@ -7,7 +7,9 @@ A sister project of [sorto](https://github.com/janttsu/sorto), and built on the 
 ## In short
 
 ```bash
-ollama pull qwen3.6:35b-a3b
+ollama pull qwen3.5:9b                                      # then make the 16k tag below
+printf 'FROM qwen3.5:9b\nPARAMETER num_ctx 16384\nPARAMETER num_gpu 99\n' > Modelfile.9b-16k
+ollama create qwen3.5:9b-16k -f Modelfile.9b-16k
 pipx install git+https://github.com/janttsu/reakto.git
 
 reakto ~/mail-export -t ~/reagoi.md          # analyse every mail, write the report
@@ -38,7 +40,7 @@ A table at the top lists everything in priority order, and the end of the report
 1. **Every mail is read in full:** decoded headers, the text or HTML body (tracking links removed) and the text of up to two attachments (PDF through `pdftotext`, read from memory, never written to disk).
 2. **Header signals** tell bulk and automated mail from people: `List-Unsubscribe`, `Precedence`, `Auto-Submitted`, no-reply senders, mailer IDs, and SPF/DKIM/DMARC results.
 3. **Mailbox context:** your own addresses are detected from the mail (or given with `--me`). Threads are rebuilt from `Message-ID`/`References`, subjects and order or ticket numbers. The model sees whether you already replied in the thread, and which earlier and **later** mails exist from the same conversation or sender. A later "your parcel was delivered" or "your ticket was solved" closes the matter.
-4. **Pass 1, every mail with thinking on:** the local model (default `qwen3.6:35b-a3b`) reasons about the mail before it answers with a structured verdict: summary, human or automated, kind, needs action, action, priority, due date, event date, suspicious, superseded. If the reasoning runs past its token budget, that one mail is answered without thinking instead of being skipped.
+4. **Pass 1, every mail with thinking on:** the local model (default `qwen3.5:9b-16k`) reasons about the mail before it answers with a structured verdict: summary, human or automated, kind, needs action, action, priority, due date, event date, suspicious, superseded. If the reasoning runs past its token budget, that one mail is answered without thinking instead of being skipped.
 5. **Pass 2, a second review:** every mail that would end up in the report (needs action, from a person, suspicious, or uncertain) is reviewed once more with thinking on. This time the analyses of the related mails are included as well. `--no-deep` skips this.
 
 `--no-think` makes pass 1 answer without thinking, several times faster but less careful. Pass 2 then also reviews the gray zone: invoices, orders, bookings, support cases, authorities and personal mail that pass 1 judged to need nothing.
@@ -75,7 +77,7 @@ Newest mail is analysed first, and the report is rewritten while the run goes on
 | Option | |
 | --- | --- |
 | `-t FILE` | report to write (required) |
-| `--model NAME` | Ollama model, default `qwen3.6:35b-a3b` |
+| `--model NAME` | Ollama model, default `qwen3.5:9b-16k`; `qwen3.6:35b-a3b` is slower but more careful |
 | `--llm-url URL` | server on this machine; default: the first of `$OLLAMA_HOST`, `:11434`, `:11435` that has the model |
 | `--lang fi\|en\|sv` | language of the analyses |
 | `--me ADDRESS` | your address (repeatable; addresses receiving a large share of the mail are detected anyway) |
@@ -90,7 +92,16 @@ Newest mail is analysed first, and the report is rewritten while the run goes on
 
 ## Speed
 
-On an RTX 2060 6 GB with 31 GB RAM, `qwen3.6:35b-a3b` writes about 2,000 thinking tokens per mail, which takes 1–2 minutes. Without thinking (`--no-think`) a mail takes 14–22 s. The first run over a few hundred mails therefore takes most of a night. After that, only new mail costs time.
+Measured on an RTX 2060 6 GB with 31 GB RAM, with thinking on:
+
+| model | how it runs | thinking per mail | time per mail |
+| --- | --- | --- | --- |
+| `qwen3.5:9b-16k` (default) | all on the GPU, about 45 tok/s | 2,300–7,400 tokens | 50–170 s |
+| `qwen3.6:35b-a3b` | experts on the CPU, about 20 tok/s | about 2,000 tokens | 60–130 s |
+
+The 9B writes twice as fast but thinks about twice as long, so both take about as long per mail. On the test mails both reached the same verdicts. The 9B fits the GPU entirely and shares the loaded model with [sorto](https://github.com/janttsu/sorto), so the two tools do not keep evicting each other's model. Without thinking (`--no-think`), a mail takes 14–22 s on the 35B.
+
+The first run over a few hundred mails takes most of a night; after that only new mail costs time. The report never starts from zero: at start, reakto fills it with every verdict already in the cache (`~/.local/state/reakto/cache.sqlite`), also verdicts written by another model for the same mail and context, and only then asks the model about the rest. `--refresh` ignores the cache.
 
 Qwen 3.6 is a hybrid model, so llama.cpp cannot reuse a cached prompt prefix. It can only restore a checkpoint taken at the end of an earlier prompt. On Ollama, reakto therefore renders the ChatML prompt itself (`/api/generate`, raw). It warms the model up once with the system prompt plus the fixed start of the user message, and every mail then restores that checkpoint instead of re-reading about 1,700 tokens. That saves about 10 s per mail.
 
