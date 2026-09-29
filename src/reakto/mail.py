@@ -15,7 +15,7 @@ import re
 import shutil
 import subprocess
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from email.message import EmailMessage
 from pathlib import Path
 
@@ -29,6 +29,7 @@ _HEADER_LINE_RE = re.compile(rb"^[A-Za-z][A-Za-z0-9-]{0,60}:")
 _MAIL_KEYS = {b"from:", b"subject:", b"date:", b"message-id:", b"received:", b"return-path:", b"delivered-to:"}
 _ADDR_RE = re.compile(r"[\w.+'-]+@[\w-]+(?:\.[\w-]+)+")
 _NOREPLY_RE = re.compile(r"(^|[._+-])(no-?reply|do-?not-?reply|donotreply|no-?responder|noreply|mailer-daemon|notifications?|bounce[s]?)([._+-]|@|$)", re.I)
+_NOT_MAIL = {".txt", ".md", ".pdf", ".jpg", ".jpeg", ".png", ".gif", ".html", ".json", ".csv", ".zip", ".db", ".sqlite"}
 _URL_RE = re.compile(r"https?://\S+|www\.\S+", re.I)
 
 
@@ -78,7 +79,8 @@ def looks_like_email(path: Path) -> bool:
     """.eml, or a Maildir-style file without extension that starts with mail headers."""
     if path.suffix.lower() == ".eml":
         return True
-    if path.suffix:
+    # Maildir names have dots and flags (1695000000.M1P2.host:2,S): sniff the headers.
+    if path.suffix.lower() in _NOT_MAIL:
         return False
     try:
         with open(path, "rb") as f:
@@ -142,7 +144,7 @@ def clean_text(text: str, limit: int) -> str:
     text = _URL_RE.sub("[linkki]", text)
     text = re.sub(r"(\[linkki\]\s*){2,}", "[linkki] ", text)
     text = re.sub(r"[ \t\r\f\v ]+", " ", text)
-    text = re.sub(r" ?\n[ \n]*", "\n", text)
+    text = re.sub(r"\s*\n\s*", "\n", text)
     text = text.strip()
     if len(text) > limit:
         text = text[:limit] + " …[katkaistu]"
@@ -264,12 +266,12 @@ def read_mail(path: Path) -> Mail | None:
         d = msg.get("Date")
         date = getattr(d, "datetime", None) or (email.utils.parsedate_to_datetime(str(d)) if d else None)
         if date is not None and date.tzinfo is None:
-            date = date.replace(tzinfo=timezone.utc)
+            date = date.replace(tzinfo=UTC)
     except (ValueError, TypeError, IndexError):
         date = None
     if date is None:
         try:
-            date = datetime.fromtimestamp(path.stat().st_mtime, tz=timezone.utc)
+            date = datetime.fromtimestamp(path.stat().st_mtime, tz=UTC)
         except OSError:
             date = None
     body, attachments = _body_and_attachments(msg)

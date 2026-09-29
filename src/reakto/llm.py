@@ -97,6 +97,7 @@ class LocalLLM:
         self.top_p = top_p
         self.timeout_sec = timeout_sec
         self.max_retries = max(0, int(max_retries))
+        self._raw: bool | None = None
 
     def _client(self, timeout: httpx.Timeout) -> httpx.Client:
         # trust_env=False: never route through HTTP(S)_PROXY to another host.
@@ -161,6 +162,95 @@ class LocalLLM:
                     completion_tokens=int(usage.get("completion_tokens") or 0),
                 )
             except (httpx.HTTPError, LLMError, KeyError, IndexError, TypeError, ValueError) as e:
+                last = e
+                if attempt < self.max_retries:
+                    time.sleep(min(8.0, 2**attempt))
+        raise LLMError(str(last) if last else "LLM request failed")
+
+    # -- Ollama raw ChatML path ------------------------------------------------
+    # Qwen 3.6 is a hybrid (recurrent) model: llama.cpp cannot reuse a cached
+    # prefix, only restore a checkpoint taken at the END of an earlier prompt.
+    # Rendering ChatML ourselves lets a warm-up prompt be an exact prefix of every
+    # real prompt (system prompt + the fixed start of the user message), so its
+    # checkpoint saves re-reading the ~1.5k-token system prompt for each mail.
+
+    def uses_raw_chatml(self) -> bool:
+        if self._raw is None:
+            self._raw = False
+            if "qwen" in self.model.lower():
+                try:
+                    with self._client(httpx.Timeout(8.0, connect=3.0)) as client:
+                        r = client.post(self._native_url("/api/show"), json={"model": self.model})
+                    self._raw = r.status_code == 200
+                except httpx.HTTPError:
+                    self._raw = False
+        return self._raw
+
+    @staticmethod
+    def chatml(system: str, user: str, *, think: bool) -> str:
+        head = f"<|im_start|>system\n{system}<|im_end|>\n<|im_start|>user\n{user}<|im_end|>\n<|im_start|>assistant\n"
+        return head + ("<think>\n" if think else "<think>\n\n</think>\n\n")
+
+    @staticmethod
+    def chatml_prefix(system: str, user_prefix: str) -> str:
+        return f"<|im_start|>system\n{system}<|im_end|>\n<|im_start|>user\n{user_prefix}"
+
+    def _generate(self, prompt: str, *, max_tokens: int, json_mode: bool, temperature: float | None) -> dict:
+        body: dict[str, Any] = {
+            "model": self.model,
+            "prompt": prompt,
+            "raw": True,
+            "stream": False,
+            "options": {
+                "temperature": self.temperature if temperature is None else temperature,
+                "top_p": self.top_p,
+                "num_predict": max_tokens,
+            },
+        }
+        if json_mode:
+            body["format"] = "json"
+        timeout = httpx.Timeout(self.timeout_sec, connect=5.0)
+        with self._client(timeout) as client:
+            resp = client.post(self._native_url("/api/generate"), json=body)
+        if resp.status_code >= 400:
+            raise LLMError(f"LLM HTTP {resp.status_code}: {resp.text[:300]}")
+        return resp.json()
+
+    def warm_prefix(self, system: str, user_prefix: str) -> float:
+        """Process the shared prompt prefix once so later mails restore it from a checkpoint."""
+        t0 = time.monotonic()
+        self._generate(self.chatml_prefix(system, user_prefix), max_tokens=1, json_mode=False, temperature=None)
+        return time.monotonic() - t0
+
+    def complete_chat(
+        self, system: str, user: str, *, think: bool = False, max_tokens: int = 1200,
+        temperature: float | None = None,
+    ) -> Completion:
+        """system + one user turn; raw ChatML on Ollama/Qwen, /v1 chat otherwise."""
+        if not self.uses_raw_chatml():
+            return self.complete(
+                [{"role": "system", "content": system}, {"role": "user", "content": user}],
+                think=think, max_tokens=max_tokens, temperature=temperature,
+            )
+        last: Exception | None = None
+        for attempt in range(self.max_retries + 1):
+            t0 = time.monotonic()
+            try:
+                # No JSON grammar while thinking: it would constrain the thoughts too.
+                data = self._generate(self.chatml(system, user, think=think), max_tokens=max_tokens,
+                                      json_mode=not think, temperature=temperature)
+                text = str(data.get("response") or "")
+                reasoning = ""
+                if think:
+                    if "</think>" not in text:
+                        raise LLMError("the model used its whole token budget thinking")
+                    reasoning, text = text.split("</think>", 1)
+                return Completion(
+                    content=text.strip(), reasoning=reasoning.strip(), seconds=time.monotonic() - t0,
+                    prompt_tokens=int(data.get("prompt_eval_count") or 0),
+                    completion_tokens=int(data.get("eval_count") or 0),
+                )
+            except (httpx.HTTPError, LLMError, KeyError, TypeError, ValueError) as e:
                 last = e
                 if attempt < self.max_retries:
                     time.sleep(min(8.0, 2**attempt))
