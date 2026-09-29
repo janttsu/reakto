@@ -14,7 +14,7 @@ from reakto import __version__
 from reakto.llm import LocalLLM, NotLocalError, probe_url
 from reakto.report import TargetNotOurs, check_target
 
-DEFAULT_MODEL = "qwen3.5:9b-16k"  # 16k context, fully on a 6 GB GPU; see README
+DEFAULT_MODEL = "qwen3.6:35b-a3b"
 DEFAULT_URLS = ["http://127.0.0.1:11434/v1", "http://127.0.0.1:11435/v1"]
 
 RULES_TEMPLATE = """\
