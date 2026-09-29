@@ -195,6 +195,12 @@ class Engine:
         write_report(self.o.target, text)
         self._last_write = time.monotonic()
 
+    def _eta(self, times: list[float], left: int) -> str:
+        if not times or left <= 0:
+            return ""
+        secs = sum(times[-20:]) / len(times[-20:]) * left
+        return f", arviolta {secs / 60:.0f} min jäljellä" if secs >= 60 else ""
+
     # -- the run -----------------------------------------------------------
     def run(self) -> int:
         check_target(self.o.target)
@@ -202,6 +208,8 @@ class Engine:
             self.load()
         n = len(self.targets)
         t_start = time.monotonic()
+        times: list[float] = []
+        dtimes: list[float] = []
         try:
             self.p.log(f"Vaihe 1/2: nopea analyysi kaikille ({self.llm.model})")
             self._warm_pending = True
@@ -209,13 +217,15 @@ class Engine:
                 v, cached = self.analyze(m, deep=False)
                 self.verdicts[m.sha256] = v
                 s = self._settled(m, v)
-                timing = "välimuisti" if cached else f"{v.seconds:.0f}s"
+                if not cached and not v.error:
+                    times.append(v.seconds)
+                timing = ("välimuisti" if cached else f"{v.seconds:.0f}s") + self._eta(times, n - i)
                 self.p.log(f"[{i}/{n}] {m.date_str()[:10]} {(m.from_name or m.from_addr)[:28]} — {m.subject[:50]}\n"
                            f"        → {_short(s)} ({timing})")
                 self.write(done=False)
             if self.o.deep:
                 quick = dict(self.verdicts)
-                flagged = [m for m in self.targets if worth_deep_review(quick[m.sha256], self.o.min_confidence)]
+                flagged = [m for m in self.targets if worth_deep_review(quick[m.sha256], self.o.min_confidence, self.o.today)]
                 summaries = {sha: v.summary for sha, v in quick.items() if v.summary}
                 self.p.log(f"Vaihe 2/2: syväanalyysi (thinking) {len(flagged)} viestille, jotka nousivat esiin")
                 self._warm_pending = True
@@ -230,7 +240,9 @@ class Engine:
                     else:
                         self.verdicts[m.sha256] = v
                     s = self._settled(m, self.verdicts[m.sha256])
-                    timing = "välimuisti" if cached else f"{v.seconds:.0f}s"
+                    if not cached and not v.error:
+                        dtimes.append(v.seconds)
+                    timing = ("välimuisti" if cached else f"{v.seconds:.0f}s") + self._eta(dtimes, len(flagged) - i)
                     self.p.log(f"[syvä {i}/{len(flagged)}] {m.date_str()[:10]} {(m.from_name or m.from_addr)[:28]} — {m.subject[:50]}\n"
                                f"        → {_short(s)} ({timing})")
                     self.write(done=False)

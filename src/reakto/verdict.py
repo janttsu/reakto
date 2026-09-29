@@ -160,12 +160,14 @@ def settle(v: Verdict, *, replied_after: bool, today: date) -> Verdict:
 # Kinds where a quick "nothing to do" is often wrong, so the deep pass looks at them anyway.
 GRAY_KINDS = {
     "personal", "work", "invoice", "order", "delivery", "booking", "ticket_or_trip",
-    "authority_or_bank", "support_ticket", "other",
+    "authority_or_bank", "support_ticket",
 }
 
 
-def worth_deep_review(v: Verdict, min_confidence: float) -> bool:
-    return (
-        bool(v.error) or v.needs_action or v.sender_type == "human" or v.suspicious
-        or v.confidence < min_confidence or v.kind in GRAY_KINDS
-    )
+def worth_deep_review(v: Verdict, min_confidence: float, today: date) -> bool:
+    if v.error or v.needs_action or v.sender_type == "human" or v.suspicious or v.confidence < min_confidence:
+        return True
+    if v.kind not in GRAY_KINDS:
+        return False
+    # A trip or booking that is over, with nothing due, drops out whatever the review says.
+    return not (v.event_date and v.event_date < today.isoformat() and not v.deadline)
