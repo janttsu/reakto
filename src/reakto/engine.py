@@ -35,7 +35,8 @@ class Options:
     language: str = "fi"
     rules: str = ""
     me: list[str] = field(default_factory=list)
-    deep: bool = True
+    think: bool = True  # thinking on for every mail in pass 1
+    deep: bool = True   # pass 2: a second, thinking review of what will be reported
     deep_max_tokens: int = 8192
     min_confidence: float = 0.75
     since_days: int | None = None
@@ -111,8 +112,15 @@ class Engine:
     def _ask(self, user: str, *, think: bool) -> tuple[Verdict, float]:
         messages = [{"role": "system", "content": self.system}, {"role": "user", "content": user}]
         t0 = time.monotonic()
-        c = self.llm.complete_chat(self.system, user, think=think,
-                                   max_tokens=self.o.deep_max_tokens if think else 1200)
+        try:
+            c = self.llm.complete_chat(self.system, user, think=think,
+                                       max_tokens=self.o.deep_max_tokens if think else 1200)
+        except LLMError as e:
+            if not think or "budget" not in str(e):
+                raise
+            # Endless deliberation: answer this one mail without thinking rather than not at all.
+            think = False
+            c = self.llm.complete_chat(self.system, user, think=False, max_tokens=1200)
         try:
             v = parse_verdict(c.content)
         except (ValueError, json.JSONDecodeError):
@@ -120,6 +128,7 @@ class Engine:
             c = self.llm.complete(messages, think=False, max_tokens=1200)
             v = parse_verdict(c.content)
         v.tokens = c.completion_tokens
+        v.deep = think
         return v, time.monotonic() - t0
 
     def _key(self, stage: str, m: Mail, context: str) -> str:
@@ -135,7 +144,8 @@ class Engine:
                 first: Verdict | None = None) -> tuple[Verdict, bool]:
         """(verdict, from_cache) for one mail and one pass."""
         assert self.box is not None
-        stage = "deep" if deep else "quick"
+        think = deep or self.o.think
+        stage = ("review" if deep else "first") + ("-think" if think else "")
         ctx = self._context(m, summaries if deep else None)
         if deep and first is not None:
             ctx += "|" + json.dumps(first.model_view(), sort_keys=True, ensure_ascii=False)
@@ -153,11 +163,11 @@ class Engine:
             first_pass=first.model_view() if deep and first is not None else None,
         )
         try:
-            v, secs = self._ask(user, think=deep)
+            v, secs = self._ask(user, think=think)
         except (LLMError, ValueError, json.JSONDecodeError) as e:
             v = Verdict(error=str(e)[:300], model=self.llm.model)
             return v, False
-        v.deep, v.model, v.seconds = deep, self.llm.model, round(secs, 1)
+        v.model, v.seconds = self.llm.model, round(secs, 1)
         self.cache.put(key, m.sha256, stage, v.to_dict())
         return v, False
 
@@ -211,7 +221,8 @@ class Engine:
         times: list[float] = []
         dtimes: list[float] = []
         try:
-            self.p.log(f"Vaihe 1/2: nopea analyysi kaikille ({self.llm.model})")
+            mode = "thinking päällä" if self.o.think else "nopea, ilman thinkingiä"
+            self.p.log(f"Vaihe 1/2: analyysi kaikille viesteille ({self.llm.model}, {mode})")
             self._warm_pending = True
             for i, m in enumerate(self.targets, 1):
                 v, cached = self.analyze(m, deep=False)
@@ -225,16 +236,17 @@ class Engine:
                 self.write(done=False)
             if self.o.deep:
                 quick = dict(self.verdicts)
-                flagged = [m for m in self.targets if worth_deep_review(quick[m.sha256], self.o.min_confidence, self.o.today)]
+                flagged = [m for m in self.targets if worth_deep_review(quick[m.sha256], self.o.min_confidence, self.o.today,
+                                                                     gray=not self.o.think)]
                 summaries = {sha: v.summary for sha, v in quick.items() if v.summary}
-                self.p.log(f"Vaihe 2/2: syväanalyysi (thinking) {len(flagged)} viestille, jotka nousivat esiin")
+                self.p.log(f"Vaihe 2/2: tarkistus (thinking + liittyvien viestien analyysit) {len(flagged)} viestille")
                 self._warm_pending = True
                 self.write(done=False, force=True)
                 for i, m in enumerate(flagged, 1):
                     first = quick[m.sha256]
                     v, cached = self.analyze(m, deep=True, summaries=summaries, first=None if first.error else first)
                     if v.error:
-                        self.p.log(f"  syväanalyysi epäonnistui, käytetään nopeaa tulosta: {v.error[:100]}")
+                        self.p.log(f"  tarkistus epäonnistui, käytetään vaiheen 1 tulosta: {v.error[:100]}")
                         if first.error:
                             self.verdicts[m.sha256] = v
                     else:
@@ -243,7 +255,7 @@ class Engine:
                     if not cached and not v.error:
                         dtimes.append(v.seconds)
                     timing = ("välimuisti" if cached else f"{v.seconds:.0f}s") + self._eta(dtimes, len(flagged) - i)
-                    self.p.log(f"[syvä {i}/{len(flagged)}] {m.date_str()[:10]} {(m.from_name or m.from_addr)[:28]} — {m.subject[:50]}\n"
+                    self.p.log(f"[tarkistus {i}/{len(flagged)}] {m.date_str()[:10]} {(m.from_name or m.from_addr)[:28]} — {m.subject[:50]}\n"
                                f"        → {_short(s)} ({timing})")
                     self.write(done=False)
         except KeyboardInterrupt:

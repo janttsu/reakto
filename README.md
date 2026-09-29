@@ -38,8 +38,10 @@ A table at the top lists everything in priority order, and the end of the report
 1. **Every mail is read in full:** decoded headers, the text or HTML body (tracking links removed) and the text of up to two attachments (PDF through `pdftotext`, read from memory, never written to disk).
 2. **Header signals** tell bulk and automated mail from people: `List-Unsubscribe`, `Precedence`, `Auto-Submitted`, no-reply senders, mailer IDs, and SPF/DKIM/DMARC results.
 3. **Mailbox context:** your own addresses are detected from the mail (or given with `--me`). Threads are rebuilt from `Message-ID`/`References`, subjects and order or ticket numbers. The model sees whether you already replied in the thread, and which earlier and **later** mails exist from the same conversation or sender. A later "your parcel was delivered" or "your ticket was solved" closes the matter.
-4. **Quick pass:** the local model (default `qwen3.6:35b-a3b`, thinking off) answers for every mail with a structured verdict: summary, human or automated, kind, needs action, action, priority, due date, event date, suspicious, superseded.
-5. **Deep pass:** mails that need action, came from a person, look suspicious, are uncertain, or are of a kind where "nothing to do" is often wrong (invoices, orders, bookings, support cases, authorities, personal mail) are reviewed again with the model's **thinking on**. This time the analyses of the related mails are included as well. `--no-deep` skips this.
+4. **Pass 1, every mail with thinking on:** the local model (default `qwen3.6:35b-a3b`) reasons about the mail before it answers with a structured verdict: summary, human or automated, kind, needs action, action, priority, due date, event date, suspicious, superseded. If the reasoning runs past its token budget, that one mail is answered without thinking instead of being skipped.
+5. **Pass 2, a second review:** every mail that would end up in the report (needs action, from a person, suspicious, or uncertain) is reviewed once more with thinking on. This time the analyses of the related mails are included as well. `--no-deep` skips this.
+
+`--no-think` makes pass 1 answer without thinking, several times faster but less careful. Pass 2 then also reviews the gray zone: invoices, orders, bookings, support cases, authorities and personal mail that pass 1 judged to need nothing.
 6. **Fixed policy on top of the model:**
    - a person's unanswered mail is critical;
    - suspicious mail is always listed;
@@ -77,16 +79,19 @@ Newest mail is analysed first, and the report is rewritten while the run goes on
 | `--lang fi\|en\|sv` | language of the analyses |
 | `--me ADDRESS` | your address (repeatable; addresses receiving a large share of the mail are detected anyway) |
 | `--days N`, `--limit N`, `--match TEXT` | analyse only recent mail, the N newest, or files whose name contains TEXT |
-| `--no-deep` | quick pass only |
+| `--no-think` | pass 1 without thinking (fast mode) |
+| `--no-deep` | skip pass 2 |
 | `--today YYYY-MM-DD` | judge dates as if it were that day |
 | `--refresh` | ignore the cache |
 | `--check` | check the model server and paths, then stop |
 
-`~/.config/reakto/config.toml` can set `model`, `url`, `language`, `me = [...]`, `rules`, `deep`, `deep_max_tokens`, `deep_below_confidence` and `temperature`.
+`~/.config/reakto/config.toml` can set `model`, `url`, `language`, `me = [...]`, `rules`, `think`, `deep`, `deep_max_tokens`, `deep_below_confidence` and `temperature`.
 
 ## Speed
 
-On an RTX 2060 6 GB with 31 GB RAM, `qwen3.6:35b-a3b` takes about 15–30 s per mail in the quick pass. With thinking on, the deep pass takes 1–2 minutes per mail. The first run over a few hundred mails therefore takes a few hours. After that only new mail costs time.
+On an RTX 2060 6 GB with 31 GB RAM, `qwen3.6:35b-a3b` writes about 2,000 thinking tokens per mail, which takes 1–2 minutes. Without thinking (`--no-think`) a mail takes 14–22 s. The first run over a few hundred mails therefore takes most of a night. After that, only new mail costs time.
+
+Qwen 3.6 is a hybrid model, so llama.cpp cannot reuse a cached prompt prefix. It can only restore a checkpoint taken at the end of an earlier prompt. On Ollama, reakto therefore renders the ChatML prompt itself (`/api/generate`, raw). It warms the model up once with the system prompt plus the fixed start of the user message, and every mail then restores that checkpoint instead of re-reading about 1,700 tokens. That saves about 10 s per mail.
 
 ## Development
 

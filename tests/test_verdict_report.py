@@ -103,7 +103,8 @@ def test_engine_end_to_end_with_cache(maildir, tmp_path):
     cache = Cache(tmp_path / "c.sqlite")
     quiet = type("Q", (), {"log": lambda self, msg: None})()
     assert Engine(opts, llm=llm, cache=cache, progress=quiet).run() == 0
-    assert [think for think, _ in llm.calls] == [False, False, True]  # the invoice gets the deep pass
+    # thinking for every mail, then a second thinking review of the invoice only
+    assert [think for think, _ in llm.calls] == [True, True, True]
     text = target.read_text()
     assert "Lasku laituripaikasta" in text and "Tarjous" not in text.split("## Ei vaadi")[0]
     llm2 = FakeLLM()
@@ -138,3 +139,14 @@ def test_fold_threads_keeps_newest_and_escalates(maildir):
     assert heads[0].verdict.priority == "critical"
     text = render(out, today=TODAY, source=maildir, model="m", total=2, analyzed=2, done=True)
     assert "Samassa ketjussa myös (1)" in text
+
+
+def test_engine_no_think_reviews_gray_zone(maildir, tmp_path):
+    make_eml(maildir, "lasku", sender="Seura <seura@gmail.com>", subject="Lasku laituripaikasta")
+    make_eml(maildir, "ad", subject="Tarjous", headers={"List-Unsubscribe": "<mailto:x@example.com>"})
+    opts = Options(source=maildir, target=tmp_path / "out.md", model="fake", url="http://127.0.0.1:1/v1",
+                   today=TODAY, think=False)
+    llm = FakeLLM()
+    quiet = type("Q", (), {"log": lambda self, msg: None})()
+    assert Engine(opts, llm=llm, cache=Cache(tmp_path / "c.sqlite"), progress=quiet).run() == 0
+    assert [think for think, _ in llm.calls] == [False, False, True]

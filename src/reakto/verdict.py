@@ -164,10 +164,11 @@ GRAY_KINDS = {
 }
 
 
-def worth_deep_review(v: Verdict, min_confidence: float, today: date) -> bool:
+def worth_deep_review(v: Verdict, min_confidence: float, today: date, *, gray: bool = True) -> bool:
+    """Pass 2 candidates: what will be reported, plus (after a quick pass) the gray zone."""
     if v.error or v.needs_action or v.sender_type == "human" or v.suspicious or v.confidence < min_confidence:
         return True
-    if v.kind not in GRAY_KINDS:
+    if not gray or v.kind not in GRAY_KINDS:
         return False
     # A trip or booking that is over, with nothing due, drops out whatever the review says.
     return not (v.event_date and v.event_date < today.isoformat() and not v.deadline)

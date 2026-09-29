@@ -70,7 +70,9 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--me", action="append", default=[], help="my e-mail address (repeatable; also auto-detected)")
     ap.add_argument("--rules", type=Path, help=f"rules file (default {config_dir() / 'rules.md'})")
     ap.add_argument("--config", type=Path, help=f"config file (default {config_dir() / 'config.toml'})")
-    ap.add_argument("--no-deep", action="store_true", help="skip the second, thinking pass")
+    ap.add_argument("--no-think", action="store_true",
+                    help="pass 1 without thinking: several times faster, less careful")
+    ap.add_argument("--no-deep", action="store_true", help="skip pass 2 (the second review of what gets reported)")
     ap.add_argument("--days", type=int, help="only mails from the last N days")
     ap.add_argument("--limit", type=int, help="only the N newest mails (testing)")
     ap.add_argument("--match", action="append", default=[], help="only files whose name contains this text (repeatable)")
@@ -147,6 +149,7 @@ def main(argv: list[str] | None = None) -> int:
         language=args.lang or cfg.get("language", "fi"),
         rules=rules,
         me=args.me + list(cfg.get("me", [])),
+        think=not args.no_think and bool(cfg.get("think", True)),
         deep=not args.no_deep and bool(cfg.get("deep", True)),
         deep_max_tokens=int(cfg.get("deep_max_tokens", 8192)),
         min_confidence=float(cfg.get("deep_below_confidence", 0.75)),

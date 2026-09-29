@@ -132,7 +132,7 @@ def _entry(it: Item, today: date) -> list[str]:
         out.append(f"- **Ajankohta:** {_when(v.event_date, today, 'mennyt')}")
     out.append(f"- **Tärkeys:** {PRIORITY_FI.get(v.priority, v.priority)}"
                f" · {'ihminen' if v.sender_type == 'human' else 'automaattinen'}"
-               f" · varmuus {v.confidence:.0%}{' · syväanalyysi' if v.deep else ''}")
+               f" · varmuus {v.confidence:.0%}{' · thinking' if v.deep else ''}")
     if v.summary:
         out.append(f"- **Analyysi:** {v.summary}")
     if v.reason:
