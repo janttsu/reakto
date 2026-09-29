@@ -80,6 +80,7 @@ class Engine:
         self._warm_pending = False
         self._models: list[str] | None = None
         self.first: dict[str, Verdict] = {}  # pass 1 verdicts; self.verdicts holds the final ones
+        self.known: dict[str, Verdict] = {}  # cached pass 1 verdicts of mails outside this run
 
     # -- loading --------------------------------------------------------
     def load(self) -> None:
@@ -243,7 +244,10 @@ class Engine:
             self.first[m.sha256], self.o.min_confidence, self.o.today, gray=not self.o.think)]
 
     def _summaries(self) -> dict[str, str]:
-        return {sha: v.summary for sha, v in self.first.items() if v.summary}
+        """Pass 1 analyses of the whole mailbox, not only of this run's targets, so that
+        --match/--limit/--days do not change what pass 2 sees (nor its cache keys)."""
+        known = {**self.known, **self.first}
+        return {sha: v.summary for sha, v in known.items() if v.summary and not v.error}
 
     def prescan(self) -> None:
         """Put every verdict already in the cache into the report before any model call.
@@ -251,10 +255,18 @@ class Engine:
         A restarted run then starts from the full report instead of an empty one,
         and the report always matches the cache.
         """
-        for m in self.targets:
+        assert self.box is not None
+        targets = {m.sha256 for m in self.targets}
+        for m in self.box.mails:
+            if self.box.is_mine(m):
+                continue
             v, cached = self.analyze(m, deep=False, cache_only=True)
-            if cached:
+            if not cached:
+                continue
+            if m.sha256 in targets:
                 self.first[m.sha256] = self.verdicts[m.sha256] = v
+            else:
+                self.known[m.sha256] = v  # context for the related mails only
         reviewed = 0
         if self.o.deep:
             summaries = self._summaries()
