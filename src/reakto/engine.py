@@ -28,7 +28,7 @@ REPAIR = (
 
 @dataclass
 class Options:
-    source: Path
+    source: Path | str
     target: Path
     model: str
     url: str
@@ -45,6 +45,9 @@ class Options:
     refresh: bool = False
     today: date = field(default_factory=date.today)
     temperature: float = 0.3
+    live: object | None = None   # a live mail source (reakto.tuta.TutaSource) instead of a directory
+    organize: bool = False       # after the run, move live mails into folders by verdict
+    dry_run: bool = False        # with organize: only say where mails would go
 
 
 class Progress:
@@ -78,18 +81,24 @@ class Engine:
         self.targets: list[Mail] = []
         self._last_write = 0.0
         self._warm_pending = False
+        self.moved: dict[str, int] | None = None
         self._models: list[str] | None = None
         self.first: dict[str, Verdict] = {}  # pass 1 verdicts; self.verdicts holds the final ones
         self.known: dict[str, Verdict] = {}  # cached pass 1 verdicts of mails outside this run
 
     # -- loading --------------------------------------------------------
     def load(self) -> None:
-        files = find_mail_files(self.o.source)
-        self.p.log(f"reakto: {len(files)} viestiä hakemistossa {self.o.source}")
-        with ThreadPoolExecutor(max_workers=4) as ex:
-            mails = [m for m in ex.map(read_mail, files) if m is not None]
-        if len(mails) < len(files):
-            self.p.log(f"  {len(files) - len(mails)} tiedostoa ei voitu lukea")
+        if self.o.live is not None:
+            self.o.live.log = self.p.log
+            self.p.log(f"reakto: haetaan viestit lähteestä {self.o.live.label()}")
+            mails = self.o.live.fetch()
+        else:
+            files = find_mail_files(Path(self.o.source))
+            self.p.log(f"reakto: {len(files)} viestiä hakemistossa {self.o.source}")
+            with ThreadPoolExecutor(max_workers=4) as ex:
+                mails = [m for m in ex.map(read_mail, files) if m is not None]
+            if len(mails) < len(files):
+                self.p.log(f"  {len(files) - len(mails)} tiedostoa ei voitu lukea")
         me = detect_my_addresses(mails, self.o.me)
         self.box = Mailbox.build(mails, me)
         self.p.log(f"  omat osoitteet: {', '.join(sorted(me)) or '(ei tunnistettu)'}")
@@ -228,7 +237,7 @@ class Engine:
                 waiting.add(self.box.thread_of.get(it.mail.sha256, it.mail.sha256))
         items = fold_threads(items, self.box.thread_of, waiting)
         text = render(items, today=self.o.today, source=self.o.source, model=self.llm.model,
-                      total=len(self.targets), analyzed=len(items), done=done)
+                      total=len(self.targets), analyzed=len(items), done=done, moved=self.moved)
         write_report(self.o.target, text)
         self._last_write = time.monotonic()
 
@@ -237,6 +246,19 @@ class Engine:
             return ""
         secs = sum(times[-20:]) / len(times[-20:]) * left
         return f", arviolta {secs / 60:.0f} min jäljellä" if secs >= 60 else ""
+
+    def organize(self) -> None:
+        """Move the triaged live mails into folders by their settled verdicts."""
+        assert self.o.live is not None
+        decided = [(m, self._settled(m, self.verdicts[m.sha256])) for m in self.targets
+                   if m.sha256 in self.verdicts and m.locator]
+        try:
+            self.moved = self.o.live.organize(decided, dry_run=self.o.dry_run)
+        except Exception as e:  # noqa: BLE001 - report, keep the analysis
+            self.p.log(f"  siirto epäonnistui: {e}")
+            return
+        what = "siirrettäisiin" if self.o.dry_run else "siirretty"
+        self.p.log(f"  {what}: " + ", ".join(f"{k} {n}" for k, n in self.moved.items()))
 
     # -- the run -----------------------------------------------------------
     def _candidates(self) -> list[Mail]:
@@ -331,6 +353,8 @@ class Engine:
             self.write(done=False, force=True)
             self.p.log(f"Keskeytetty. Osittainen raportti: {self.o.target}")
             return 130
+        if self.o.organize and self.o.live is not None:
+            self.organize()
         self.write(done=True, force=True)
         need = sum(1 for m in self.targets if self._settled(m, self.verdicts[m.sha256]).needs_action)
         self.p.log(f"Valmis {time.monotonic() - t_start:.0f} s: {need}/{n} viestiä vaatii reaktiota → {self.o.target}")

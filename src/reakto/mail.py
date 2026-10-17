@@ -59,6 +59,8 @@ class Mail:
     body: str
     attachments: list[Attachment] = field(default_factory=list)
     signals: dict[str, str] = field(default_factory=dict)
+    locator: str = ""   # live mail: "<list_id>/<mail_id>" in the mailbox instead of a file
+    mine: bool = False  # live mail read from my Sent folder
 
     @property
     def from_domain(self) -> str:

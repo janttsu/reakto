@@ -14,7 +14,7 @@ reakto ~/mail-export -t ~/reagoi.md          # analyse every mail, write the rep
 reakto ~/mail-export -t ~/reagoi.md --days 7 # only last week's mail
 ```
 
-- **Input:** a directory of `.eml` files or Maildir message files, searched recursively. Work and personal mail can be mixed. reakto only reads it.
+- **Input:** a directory of `.eml` files or Maildir message files, searched recursively, or (with `--tuta`) the live inbox of a Tuta mailbox through a local MCP server. Work and personal mail can be mixed. reakto only reads it, unless you ask it to file the live mail into folders.
 - **Output:** one Markdown report (`-t`). Each entry has what the mail is, what you should do, the due or event date (with **OVERDUE** when it has passed), and a link to the message file.
 - **Private:** the model server must be on this machine; mail content never leaves it.
 
@@ -52,6 +52,34 @@ A table at the top lists everything in priority order, and the end of the report
 
 Newest mail is analysed first, and the report is rewritten while the run goes on. Stopping with Ctrl-C keeps a partial report. Verdicts are cached, so the next run only asks the model about new mail or mail whose context changed. `--refresh` asks again.
 
+## Live mail from Tuta
+
+Instead of exported files, reakto can triage the inbox of a [Tuta](https://tuta.com) mailbox as it is right now, and file the mails into folders afterwards. It uses [tutamcp](https://github.com/peix2/tutamcp-public), an unofficial MCP server that talks to Tuta's API and decrypts the mail on this machine. reakto starts it as a child process and speaks MCP to it over stdio; nothing listens on a port.
+
+```toml
+# ~/.config/reakto/config.toml
+[tuta]
+command = "/path/to/tutamcp.sh"   # the stdio server; it reads its own credentials file
+folder = "inbox"                  # what to triage
+important = "Action"              # where mails that need my reaction go (name or folder_elem_id)
+newsletters = "Newsletters"       # newsletters and marketing
+archive = "archive"               # everything else
+important_min_priority = "low"    # "medium" sends low-priority checks (login alerts) to the archive
+sent = true                       # read the Sent folder to see what I already answered
+```
+
+```bash
+reakto --tuta --check                          # log in, list the folders with their ids
+reakto --tuta -t ~/reagoi.md                   # analyse the inbox, write the report, move nothing
+reakto --tuta -t ~/reagoi.md --organize --dry-run   # also say where each mail would go
+reakto --tuta -t ~/reagoi.md --organize        # file the mails: action / newsletters / archive
+```
+
+- Every mail's body is read in full and PDF attachments are read through `pdftotext`, exactly as with files. The Sent folder tells reakto which conversations you already answered.
+- `--organize` moves each triaged mail by its verdict: needs your reaction → `important`; newsletter or marketing → `newsletters`; everything else → `archive`. Mails whose analysis failed stay put. Nothing is ever deleted, sent or replied to; tutamcp can be run with its send tools disabled and reakto never calls delete.
+- The report links live mails by their Tuta id instead of a file. Verdicts are cached by mail id and content like files, so a daily run only asks the model about new mail.
+- `--days`, `--limit` and `--folder` work here too; `--match` matches the subject.
+
 ## Your own rules
 
 `~/.config/reakto/rules.md` holds plain-language rules that the model follows. `reakto --init-rules` creates a commented template. For example:
@@ -69,6 +97,7 @@ Newest mail is analysed first, and the report is rewritten while the run goes on
 - The report is written atomically with mode `0600`. An existing file is replaced only if reakto wrote it (it starts with a marker line). Any other file is refused.
 - Cached verdicts quote your mail, so they live in `~/.local/state/reakto/cache.sqlite` (directory `0700`, file `0600`).
 - Mail content is treated as untrusted data: the prompt tells the model never to follow instructions inside a message.
+- With `--tuta`, mail leaves Tuta only to the local MCP server process and the local model. reakto uses the server's list, read, attachment and move tools and nothing else.
 
 ## Options
 
@@ -80,13 +109,15 @@ Newest mail is analysed first, and the report is rewritten while the run goes on
 | `--lang fi\|en\|sv` | language of the analyses |
 | `--me ADDRESS` | your address (repeatable; addresses receiving a large share of the mail are detected anyway) |
 | `--days N`, `--limit N`, `--match TEXT` | analyse only recent mail, the N newest, or files whose name contains TEXT |
+| `--tuta`, `--folder NAME` | triage a live Tuta folder through tutamcp (see above) |
+| `--organize`, `--dry-run` | with `--tuta`: file the mails into folders by verdict, or only show where they would go |
 | `--no-think` | pass 1 without thinking (fast mode) |
 | `--no-deep` | skip pass 2 |
 | `--today YYYY-MM-DD` | judge dates as if it were that day |
 | `--refresh` | ignore the cache |
 | `--check` | check the model server and paths, then stop |
 
-`~/.config/reakto/config.toml` can set `model`, `url`, `language`, `me = [...]`, `rules`, `think`, `deep`, `deep_max_tokens`, `deep_below_confidence` and `temperature`.
+`~/.config/reakto/config.toml` can set `model`, `url`, `language`, `me = [...]`, `rules`, `think`, `deep`, `deep_max_tokens`, `deep_below_confidence` and `temperature`, plus the `[tuta]` table above.
 
 ## Speed
 

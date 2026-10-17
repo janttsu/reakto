@@ -108,8 +108,10 @@ def _when(iso: str, today: date, past_word: str) -> str:
     return f"{iso} — {d} pv päästä"
 
 
-def _link(p: Path) -> str:
-    return f"[{p.name}](file://{quote(str(p.resolve()))})"
+def _link(m: Mail) -> str:
+    if m.locator:
+        return f"Tuta `{m.locator.split('/', 1)[-1]}`"
+    return f"[{m.path.name}](file://{quote(str(m.path.resolve()))})"
 
 
 def _sender(m: Mail) -> str:
@@ -137,10 +139,10 @@ def _entry(it: Item, today: date) -> list[str]:
         out.append(f"- **Analyysi:** {v.summary}")
     if v.reason:
         out.append(f"- **Perustelu:** {v.reason}")
-    out.append(f"- **Viesti:** {_link(m.path)}")
+    out.append(f"- **Viesti:** {_link(m)}")
     if it.also:
         out.append(f"- **Samassa ketjussa myös ({len(it.also)}):** "
-                   + ", ".join(f"{o.date_str()[:10]} {_link(o.path)}" for o in it.also))
+                   + ", ".join(f"{o.date_str()[:10]} {_link(o)}" for o in it.also))
     out.append("")
     return out
 
@@ -151,8 +153,8 @@ def _sort_key(it: Item) -> tuple:
 
 
 def render(
-    items: list[Item], *, today: date, source: Path, model: str, total: int, analyzed: int,
-    done: bool, generated: datetime | None = None,
+    items: list[Item], *, today: date, source: Path | str, model: str, total: int, analyzed: int,
+    done: bool, generated: datetime | None = None, moved: dict[str, int] | None = None,
 ) -> str:
     act = [it for it in items if it.verdict.needs_action and not it.verdict.error]
     errors = [it for it in items if it.verdict.error]
@@ -209,9 +211,12 @@ def render(
     if errors:
         lines += [f"## ❓ Analyysi epäonnistui – tarkista itse ({len(errors)})", ""]
         for it in errors:
-            lines.append(f"- {it.mail.date_str()} {_sender(it.mail)}: {it.mail.subject} — {_link(it.mail.path)} ({it.verdict.error[:120]})")
+            lines.append(f"- {it.mail.date_str()} {_sender(it.mail)}: {it.mail.subject} — {_link(it.mail)} ({it.verdict.error[:120]})")
         lines.append("")
 
+    if moved:
+        lines += ["## Siirretty kansioihin", "",
+                  ", ".join(f"{name} {n}" for name, n in moved.items()) + ".", ""]
     no_action = [it for it in items if not it.verdict.needs_action and not it.verdict.error]
     kinds = Counter(it.verdict.kind for it in no_action)
     lines += [

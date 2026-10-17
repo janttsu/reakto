@@ -63,6 +63,14 @@ def build_parser() -> argparse.ArgumentParser:
         "and list the ones that still need your personal reaction.",
     )
     ap.add_argument("source", nargs="?", type=Path, help="directory with the e-mail files (read only)")
+    ap.add_argument("--tuta", action="store_true",
+                    help="read the mail live from Tuta through a local tutamcp server instead of a directory "
+                         "([tuta] command in the config)")
+    ap.add_argument("--folder", help="with --tuta: the folder to triage (default inbox)")
+    ap.add_argument("--organize", action="store_true",
+                    help="with --tuta: afterwards move each mail to the folder its verdict points at "
+                         "([tuta] important / newsletters / archive in the config)")
+    ap.add_argument("--dry-run", action="store_true", help="with --organize: only report where mails would go")
     ap.add_argument("-t", "--target", type=Path, help="Markdown report to write")
     ap.add_argument("--model", help=f"Ollama model (default {DEFAULT_MODEL})")
     ap.add_argument("--llm-url", help="OpenAI-compatible URL on this machine (default: $OLLAMA_HOST, else :11434)")
@@ -97,19 +105,31 @@ def main(argv: list[str] | None = None) -> int:
                 f.write(RULES_TEMPLATE)
             print(f"created {rules_path}")
         return 0
-    if args.source is None or args.target is None:
-        build_parser().error("SOURCE and -t TARGET are required")
-    source = args.source.expanduser().resolve()
+    if args.target is None or (args.source is None and not args.tuta):
+        build_parser().error("SOURCE (or --tuta) and -t TARGET are required")
+    if args.tuta and args.source is not None:
+        build_parser().error("give either SOURCE or --tuta, not both")
     target = args.target.expanduser().resolve()
-    if not source.is_dir():
-        print(f"reakto: {source} is not a directory", file=sys.stderr)
-        return 2
-    try:
-        target.relative_to(source)
-        print("reakto: the report must not be written inside the mail directory", file=sys.stderr)
-        return 2
-    except ValueError:
-        pass
+    live = None
+    source: Path | str
+    if args.tuta:
+        live = _tuta_source(cfg.get("tuta") or {}, args)
+        if live is None:
+            return 2
+        source = live.label()
+    else:
+        source = args.source.expanduser().resolve()
+        if not source.is_dir():
+            print(f"reakto: {source} is not a directory", file=sys.stderr)
+            return 2
+        try:
+            target.relative_to(source)
+            print("reakto: the report must not be written inside the mail directory", file=sys.stderr)
+            return 2
+        except ValueError:
+            pass
+    if args.organize and live is None:
+        build_parser().error("--organize needs --tuta")
     try:
         check_target(target)
     except TargetNotOurs as e:
@@ -137,6 +157,8 @@ def main(argv: list[str] | None = None) -> int:
     print(f"reakto {__version__}: model {model} at {url} (local only)"
           + (f", {len(rules.splitlines())} rule line(s) from {rules_path}" if rules else ""), file=sys.stderr)
     if args.check:
+        if live is not None:
+            return _check_tuta(live)
         return 0
 
     from reakto.engine import Engine, Options
@@ -159,8 +181,60 @@ def main(argv: list[str] | None = None) -> int:
         refresh=args.refresh,
         today=args.today or date.today(),
         temperature=float(cfg.get("temperature", 0.3)),
+        live=live,
+        organize=args.organize,
+        dry_run=args.dry_run,
     )
     return Engine(opts).run()
+
+
+def _tuta_source(tcfg: dict, args):
+    from reakto.tuta import TutaSource
+
+    command = str(tcfg.get("command") or "").strip()
+    if not command:
+        print("reakto: --tuta needs [tuta] command = \"/path/to/tutamcp.sh\" in the config "
+              f"({config_dir() / 'config.toml'})", file=sys.stderr)
+        return None
+    src = TutaSource(
+        command=command,
+        folder=args.folder or str(tcfg.get("folder") or "inbox"),
+        important=str(tcfg.get("important") or ""),
+        newsletters=str(tcfg.get("newsletters") or ""),
+        archive=str(tcfg.get("archive") or "archive"),
+        important_min_priority=str(tcfg.get("important_min_priority") or "low"),
+        with_sent=bool(tcfg.get("sent", True)),
+        sent_limit=int(tcfg.get("sent_limit", 200)),
+        limit=args.limit,
+        since_days=args.days,
+        pdf_text=bool(tcfg.get("pdf_text", True)),
+        timeout=float(tcfg.get("timeout_sec", 600)),
+    )
+    if args.organize and not (src.important and src.newsletters):
+        print("reakto: --organize needs [tuta] important and newsletters folders in the config "
+              "(name or folder_elem_id; see reakto --tuta --check)", file=sys.stderr)
+        return None
+    return src
+
+
+def _check_tuta(live) -> int:
+    from reakto.mcp import MCPError
+
+    try:
+        with live._client() as c:
+            live._load_folders(c)
+    except MCPError as e:
+        print(f"reakto: Tuta MCP: {e}", file=sys.stderr)
+        return 2
+    print(f"Tuta MCP ok: {len(live.folders)} folders", file=sys.stderr)
+    for f in live.folders:
+        role = ""
+        for name, key in (("triage", live.folder), ("important", live.important),
+                          ("newsletters", live.newsletters), ("archive", live.archive)):
+            if key and live.find_folder(key) is f:
+                role += f" <- {name}"
+        print(f"  {f.type:8} {f.name:30} folder_elem_id={f.elem_id}{role}", file=sys.stderr)
+    return 0
 
 
 if __name__ == "__main__":

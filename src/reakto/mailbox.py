@@ -44,6 +44,8 @@ def detect_my_addresses(mails: list[Mail], configured: list[str] | None = None) 
     me = {a.lower() for a in configured or []}
     counts: Counter[str] = Counter()
     for m in mails:
+        if m.mine and m.from_addr:
+            me.add(m.from_addr)  # a mail from my own Sent folder
         for a in set(m.to + m.delivered_to):
             counts[a] += 1
     for addr, c in counts.items():
@@ -108,7 +110,7 @@ class Mailbox:
         return box
 
     def is_mine(self, m: Mail) -> bool:
-        return m.from_addr in self.me
+        return m.mine or m.from_addr in self.me
 
     def thread(self, m: Mail) -> list[Mail]:
         return self.threads.get(self.thread_of.get(m.sha256, ""), [m])
